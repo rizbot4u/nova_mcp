@@ -1,0 +1,6 @@
+.env
+node_modules/
+venv/
+logs/
+_old_python_backup/
+*.log
