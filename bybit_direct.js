@@ -63,6 +63,7 @@ export async function createOrder({
   qty,
   price,
   category = "linear",
+  positionIdx,
 }) {
   const { apiKey } = getCreds();
   const recvWindow = "5000";
@@ -74,6 +75,7 @@ export async function createOrder({
     orderType,
     qty,
     ...(price ? { price } : {}),
+    ...(positionIdx !== undefined ? { positionIdx } : {}),
     timeInForce: "GTC",
   });
   const signature = sign(timestamp, apiKey, recvWindow, body);

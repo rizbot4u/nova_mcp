@@ -3,6 +3,11 @@
  * ==========================================
  * Replaces trading-mcp dependency with direct Bybit API calls.
  * Keeps the /skills/* interface identical.
+ *
+ * Security:
+ *   - /skills/execute requires header  X-Bridge-Token: <BRIDGE_SECRET>
+ *   - Server binds to 127.0.0.1 (localhost only), not 0.0.0.0
+ *   - Refuses to start if BRIDGE_SECRET is unset
  */
 
 import express from "express";
@@ -23,6 +28,28 @@ const EVM_RPC_URL =
   process.env.EVM_RPC_URL ||
   "https://base-mainnet.g.alchemy.com/v2/2mcrNfMkBxuSbN3D77b77pyfjFAv1k7Z";
 const DKHYR_TOKEN_ADDRESS = "0x9991bE994829601F90328CCF9cee4D1A55ADae70";
+
+// ---------- Risk limits ----------
+const ORDER_LIMITS = {
+  maxQtyPerSymbol: {
+    BTCUSDT: 0.001,
+    ETHUSDT: 0.02,
+    default: 0.001,
+  },
+};
+
+const TRANSFER_ALLOWLIST = [
+  "0xa4ee963f223c193261d8545e4c4681ed3837af25",
+  "0x084db36be9e2e6de5a9eadbdba6f26ee0c4f7113",
+];
+
+// ---------- Security: shared secret with Jarvis ----------
+const BRIDGE_SECRET = process.env.BRIDGE_SECRET;
+if (!BRIDGE_SECRET) {
+  console.error("❌ BRIDGE_SECRET not set — refusing to start");
+  console.error("   Add BRIDGE_SECRET=<64-char-hex> to your .env and re-run.");
+  process.exit(1);
+}
 
 if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
 
@@ -91,8 +118,17 @@ async function handleTokenBalance(params) {
 async function handleTokenTransfer(params) {
   const pk = getFormattedPrivateKey();
   if (!pk) throw new Error("TREASURY_PRIVATE_KEY not set");
+  if (!params.confirm) throw new Error("Transfer requires confirm: true");
   if (!params.to_address || !params.amount)
     throw new Error("'to_address' and 'amount' required");
+
+  const toLower = params.to_address.toLowerCase();
+  if (!TRANSFER_ALLOWLIST.includes(toLower)) {
+    throw new Error(
+      `Transfer rejected: ${params.to_address} is not on the approved allowlist`
+    );
+  }
+
   const wallet = new ethers.Wallet(pk, provider);
   const c = new ethers.Contract(DKHYR_TOKEN_ADDRESS, ERC20_ABI, wallet);
   const decimals = await c.decimals();
@@ -121,6 +157,20 @@ async function handleBybitBalance(params) {
 
 async function handleBybitOrder(params) {
   if (!params.confirm) throw new Error("Order requires confirm: true");
+
+  const qty = parseFloat(params.qty);
+  const symbol = params.symbol;
+  const maxQty =
+    ORDER_LIMITS.maxQtyPerSymbol[symbol] ??
+    ORDER_LIMITS.maxQtyPerSymbol.default;
+
+  if (!qty || qty <= 0) throw new Error("Invalid qty");
+  if (qty > maxQty) {
+    throw new Error(
+      `Order rejected: qty ${qty} exceeds max allowed ${maxQty} for ${symbol}`
+    );
+  }
+
   return bybitCreateOrder({
     symbol: params.symbol,
     side: params.side,
@@ -128,6 +178,7 @@ async function handleBybitOrder(params) {
     qty: params.qty,
     price: params.price,
     category: params.category || "linear",
+    positionIdx: params.positionIdx,
   });
 }
 
@@ -148,8 +199,13 @@ app.use(express.json());
 // ---------- Swagger ----------
 const swaggerDoc = {
   openapi: "3.0.0",
-  info: { title: "Nova MCP Bridge", version: "1.2.0" },
-  servers: [{ url: `http://localhost:${PORT}` }],
+  info: { title: "Nova MCP Bridge", version: "1.3.0" },
+  servers: [{ url: `http://127.0.0.1:${PORT}` }],
+  components: {
+    securitySchemes: {
+      BridgeToken: { type: "apiKey", in: "header", name: "X-Bridge-Token" },
+    },
+  },
   paths: {
     "/": { get: { summary: "Health check", responses: { 200: { description: "OK" } } } },
     "/skills/list": {
@@ -157,7 +213,8 @@ const swaggerDoc = {
     },
     "/skills/execute": {
       post: {
-        summary: "Execute a skill",
+        summary: "Execute a skill (requires X-Bridge-Token)",
+        security: [{ BridgeToken: [] }],
         requestBody: {
           required: true,
           content: {
@@ -172,14 +229,17 @@ const swaggerDoc = {
                     example: "bybit.ticker",
                   },
                   org_id: { type: "string", example: "org_1" },
-                  actor: { type: "string", example: "api" },
+                  actor: { type: "string", example: "jarvis" },
                   parameters: { type: "object" },
                 },
               },
             },
           },
         },
-        responses: { 200: { description: "Result" } },
+        responses: {
+          200: { description: "Result" },
+          401: { description: "Unauthorized — missing or invalid X-Bridge-Token" },
+        },
       },
     },
   },
@@ -190,8 +250,9 @@ app.get("/openapi.json", (req, res) => res.json(swaggerDoc));
 app.get("/", (req, res) => {
   res.json({
     service: "Nova MCP Bridge",
-    version: "1.2.0",
+    version: "1.3.0",
     rails: ["broker_bybit", "web3_dkhyr"],
+    auth: "X-Bridge-Token required on /skills/execute",
     docs: "/docs",
   });
 });
@@ -208,6 +269,18 @@ app.get("/skills/list", (req, res) => {
 });
 
 app.post("/skills/execute", async (req, res) => {
+  // ---- AUTH GUARD ----
+  const token = req.headers["x-bridge-token"];
+  if (!token || token !== BRIDGE_SECRET) {
+    logSkillCall({
+      skill_name: req.body?.skill_name || "unknown",
+      org_id: "unauthorized",
+      actor: "unknown",
+      error: "unauthorized",
+    });
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
   const {
     skill_name,
     org_id = "default_org",
@@ -237,8 +310,10 @@ app.post("/skills/execute", async (req, res) => {
   }
 });
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Nova Bridge active on http://0.0.0.0:${PORT}`);
-  console.log(`📖 Swagger UI: http://localhost:${PORT}/docs`);
+// ---------- Bind to loopback ONLY ----------
+app.listen(PORT, "127.0.0.1", () => {
+  console.log(`🚀 Nova Bridge active on http://127.0.0.1:${PORT} (localhost only)`);
+  console.log(`🔒 /skills/execute requires header: X-Bridge-Token`);
+  console.log(`📖 Swagger UI: http://127.0.0.1:${PORT}/docs`);
   console.log(`📝 Audit log: ${SKILL_LOG}`);
 });

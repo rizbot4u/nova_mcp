@@ -1,6 +1,8 @@
-.env
 node_modules/
-venv/
-logs/
-_old_python_backup/
+.env
+.env.*
 *.log
+logs/
+bridge.js.pre-hardening
+_old_python_backup/
+.DS_Store
