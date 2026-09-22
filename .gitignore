@@ -14,3 +14,14 @@ bridge.js.pre-hardening
 *.pre-*
 *.bak
 .DS_Store
+
+# Security — never commit these
+.env
+.env.*
+!.env.example
+*.db
+*.db-journal
+.bybit_oauth_tokens.json
+credentials.json
+*.pem
+*.key
