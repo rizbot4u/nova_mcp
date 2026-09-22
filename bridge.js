@@ -1,13 +1,18 @@
 /**
- * Nova Unified Bridge — Direct Bybit + DKHYR
- * ==========================================
- * Replaces trading-mcp dependency with direct Bybit API calls.
- * Keeps the /skills/* interface identical.
+ * Nova Unified Bridge — Direct Bybit + DKHYR + per-tenant vault
+ * ============================================================
+ *  - /skills/*       : executes broker/web3 skills
+ *  - /v1/keys/store  : stores per-tenant encrypted API keys
  *
  * Security:
- *   - /skills/execute requires header  X-Bridge-Token: <BRIDGE_SECRET>
- *   - Server binds to 127.0.0.1 (localhost only), not 0.0.0.0
+ *   - /skills/execute and /v1/keys/store require header X-Bridge-Token
+ *   - Binds to 127.0.0.1 (localhost only)
  *   - Refuses to start if BRIDGE_SECRET is unset
+ *
+ * Tenant credential resolution:
+ *   - Body may include tenant_id (preferred) or org_id (fallback)
+ *   - If the tenant has keys in the vault, they're used
+ *   - Otherwise falls back to .env BYBIT_API_KEY / BYBIT_API_SECRET
  */
 
 import express from "express";
@@ -20,9 +25,10 @@ import {
   getWalletBalance as bybitGetBalance,
   createOrder as bybitCreateOrder,
 } from "./bybit_direct.js";
+import { getTenantKeys, storeTenantKeys } from "./vault.js";
 
 const PORT = process.env.PORT || 8001;
-const LOG_DIR = "/tmp/nova_mcp_logs";
+const LOG_DIR = process.env.NOVA_LOG_DIR || "/tmp/nova_mcp_logs";
 const SKILL_LOG = path.join(LOG_DIR, "skill_calls.log");
 const EVM_RPC_URL =
   process.env.EVM_RPC_URL ||
@@ -144,18 +150,18 @@ async function handleTokenTransfer(params) {
   };
 }
 
-// ---------- Broker rail (direct Bybit) ----------
+// ---------- Broker rail (direct Bybit, per-tenant capable) ----------
 async function handleBybitTicker(params) {
   const symbol = params.symbol || "BTCUSDT";
   const category = params.category || "linear";
   return bybitGetTicker(symbol, category);
 }
 
-async function handleBybitBalance(params) {
-  return bybitGetBalance(params.accountType || "UNIFIED");
+async function handleBybitBalance(params, creds = null) {
+  return bybitGetBalance(params.accountType || "UNIFIED", creds);
 }
 
-async function handleBybitOrder(params) {
+async function handleBybitOrder(params, creds = null) {
   if (!params.confirm) throw new Error("Order requires confirm: true");
 
   const qty = parseFloat(params.qty);
@@ -171,15 +177,18 @@ async function handleBybitOrder(params) {
     );
   }
 
-  return bybitCreateOrder({
-    symbol: params.symbol,
-    side: params.side,
-    orderType: params.orderType || "Limit",
-    qty: params.qty,
-    price: params.price,
-    category: params.category || "linear",
-    positionIdx: params.positionIdx,
-  });
+  return bybitCreateOrder(
+    {
+      symbol: params.symbol,
+      side: params.side,
+      orderType: params.orderType || "Limit",
+      qty: params.qty,
+      price: params.price,
+      category: params.category || "linear",
+      positionIdx: params.positionIdx,
+    },
+    creds
+  );
 }
 
 // ---------- Skill registry ----------
@@ -199,7 +208,7 @@ app.use(express.json());
 // ---------- Swagger ----------
 const swaggerDoc = {
   openapi: "3.0.0",
-  info: { title: "Nova MCP Bridge", version: "1.3.0" },
+  info: { title: "Nova MCP Bridge", version: "1.4.0" },
   servers: [{ url: `http://127.0.0.1:${PORT}` }],
   components: {
     securitySchemes: {
@@ -228,6 +237,7 @@ const swaggerDoc = {
                     enum: Object.keys(SKILLS),
                     example: "bybit.ticker",
                   },
+                  tenant_id: { type: "string", example: "tenant_alpha" },
                   org_id: { type: "string", example: "org_1" },
                   actor: { type: "string", example: "jarvis" },
                   parameters: { type: "object" },
@@ -242,6 +252,29 @@ const swaggerDoc = {
         },
       },
     },
+    "/v1/keys/store": {
+      post: {
+        summary: "Store per-tenant API keys (requires X-Bridge-Token)",
+        security: [{ BridgeToken: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["tenant_id", "api_key", "api_secret"],
+                properties: {
+                  tenant_id: { type: "string", example: "tenant_alpha" },
+                  api_key: { type: "string" },
+                  api_secret: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+        responses: { 200: { description: "Stored" }, 401: { description: "Unauthorized" } },
+      },
+    },
   },
 };
 app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerDoc));
@@ -250,9 +283,10 @@ app.get("/openapi.json", (req, res) => res.json(swaggerDoc));
 app.get("/", (req, res) => {
   res.json({
     service: "Nova MCP Bridge",
-    version: "1.3.0",
+    version: "1.4.0",
     rails: ["broker_bybit", "web3_dkhyr"],
-    auth: "X-Bridge-Token required on /skills/execute",
+    vault: "per-tenant encrypted keys",
+    auth: "X-Bridge-Token required on /skills/execute and /v1/keys/store",
     docs: "/docs",
   });
 });
@@ -268,6 +302,33 @@ app.get("/skills/list", (req, res) => {
   });
 });
 
+// ---------- Vault: store tenant keys ----------
+app.post("/v1/keys/store", (req, res) => {
+  const token = req.headers["x-bridge-token"];
+  if (!token || token !== BRIDGE_SECRET) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
+  const { tenant_id, api_key, api_secret } = req.body || {};
+  if (!tenant_id || !api_key || !api_secret) {
+    return res.status(400).json({ error: "tenant_id, api_key, api_secret required" });
+  }
+
+  try {
+    storeTenantKeys(tenant_id, api_key, api_secret);
+    logSkillCall({
+      skill_name: "vault.store",
+      org_id: tenant_id,
+      actor: "api",
+      tenant_id,
+    });
+    return res.json({ status: "success", tenant_id });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------- Skills: execute ----------
 app.post("/skills/execute", async (req, res) => {
   // ---- AUTH GUARD ----
   const token = req.headers["x-bridge-token"];
@@ -283,29 +344,44 @@ app.post("/skills/execute", async (req, res) => {
 
   const {
     skill_name,
+    tenant_id,
     org_id = "default_org",
     actor = "api",
     parameters = {},
   } = req.body || {};
-  const skill = SKILLS[skill_name];
 
+  const skill = SKILLS[skill_name];
   if (!skill) {
     logSkillCall({ skill_name, org_id, actor, error: "Unknown skill" });
     return res.status(404).json({ error: `Unknown skill: ${skill_name}` });
   }
 
+  // Resolve tenant credentials (falls back to .env if tenant unknown)
+  const activeTenant = tenant_id || org_id;
+  const creds = getTenantKeys(activeTenant);
+
   try {
-    const result = await skill.handler(parameters);
-    logSkillCall({ skill_name, org_id, actor, parameters, result });
+    const result = await skill.handler(parameters, creds);
+    logSkillCall({
+      skill_name,
+      tenant_id: activeTenant,
+      org_id,
+      actor,
+      has_tenant_creds: !!creds,
+      parameters,
+      result,
+    });
     res.json({
       skill: skill_name,
       category: skill.category,
+      tenant_id: activeTenant,
       org_id,
       actor,
+      used_tenant_creds: !!creds,
       result,
     });
   } catch (err) {
-    logSkillCall({ skill_name, org_id, actor, error: err.message });
+    logSkillCall({ skill_name, tenant_id: activeTenant, org_id, actor, error: err.message });
     res.status(500).json({ error: err.message });
   }
 });
@@ -313,7 +389,8 @@ app.post("/skills/execute", async (req, res) => {
 // ---------- Bind to loopback ONLY ----------
 app.listen(PORT, "127.0.0.1", () => {
   console.log(`🚀 Nova Bridge active on http://127.0.0.1:${PORT} (localhost only)`);
-  console.log(`🔒 /skills/execute requires header: X-Bridge-Token`);
+  console.log(`🔒 /skills/execute and /v1/keys/store require header: X-Bridge-Token`);
+  console.log(`🗄️  Vault: per-tenant encrypted keys`);
   console.log(`📖 Swagger UI: http://127.0.0.1:${PORT}/docs`);
   console.log(`📝 Audit log: ${SKILL_LOG}`);
 });

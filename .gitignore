@@ -25,3 +25,14 @@ bridge.js.pre-hardening
 credentials.json
 *.pem
 *.key
+
+# Security
+.env
+.env.*
+!.env.example
+*.db
+*.db-journal
+.bybit_oauth_tokens.json
+credentials.json
+*.pem
+*.key

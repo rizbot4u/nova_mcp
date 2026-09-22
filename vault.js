@@ -1,11 +1,12 @@
-const crypto = require('crypto');
-const Database = require('better-sqlite3');
-const path = require('path');
+import crypto from "crypto";
+import path from "path";
+import { fileURLToPath } from "url";
+import Database from "better-sqlite3";
 
-const dbPath = process.env.NOVA_DB_PATH || path.join(__dirname, '../nova.db');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const dbPath = process.env.NOVA_DB_PATH || path.join(__dirname, "nova.db");
 const db = new Database(dbPath);
 
-// Initialize DB schema for tenant keys
 db.exec(`
   CREATE TABLE IF NOT EXISTS tenant_keys (
     tenant_id TEXT PRIMARY KEY,
@@ -15,37 +16,37 @@ db.exec(`
   )
 `);
 
-const MASTER_SECRET = process.env.VAULT_MASTER_KEY || 'default-fallback-master-secret-change-me';
+const MASTER_SECRET = process.env.VAULT_MASTER_KEY;
+if (!MASTER_SECRET) {
+  console.error("VAULT_MASTER_KEY not set — refusing to start vault");
+  process.exit(1);
+}
 
 function deriveKey(tenantId) {
-  return crypto.pbkdf2Sync(MASTER_SECRET, tenantId, 100000, 32, 'sha256');
+  return crypto.pbkdf2Sync(MASTER_SECRET, tenantId, 100_000, 32, "sha256");
 }
 
 function encrypt(tenantId, text) {
   const key = deriveKey(tenantId);
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-  
-  let encrypted = cipher.update(text, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
-  const tag = cipher.getAuthTag().toString('hex');
-  
-  return `${iv.toString('hex')}:${tag}:${encrypted}`;
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  let enc = cipher.update(text, "utf8", "hex");
+  enc += cipher.final("hex");
+  const tag = cipher.getAuthTag().toString("hex");
+  return `${iv.toString("hex")}:${tag}:${enc}`;
 }
 
-function decrypt(tenantId, cipherText) {
-  const [ivHex, tagHex, encryptedHex] = cipherText.split(':');
+function decrypt(tenantId, payload) {
+  const [ivHex, tagHex, encHex] = payload.split(":");
   const key = deriveKey(tenantId);
-  
-  const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivHex, 'hex'));
-  decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
-  
-  let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted;
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(ivHex, "hex"));
+  decipher.setAuthTag(Buffer.from(tagHex, "hex"));
+  let dec = decipher.update(encHex, "hex", "utf8");
+  dec += decipher.final("utf8");
+  return dec;
 }
 
-function storeTenantKeys(tenantId, apiKey, apiSecret) {
+export function storeTenantKeys(tenantId, apiKey, apiSecret) {
   const stmt = db.prepare(`
     INSERT INTO tenant_keys (tenant_id, enc_api_key, enc_api_secret)
     VALUES (?, ?, ?)
@@ -56,16 +57,23 @@ function storeTenantKeys(tenantId, apiKey, apiSecret) {
   stmt.run(tenantId, encrypt(tenantId, apiKey), encrypt(tenantId, apiSecret));
 }
 
-function getTenantKeys(tenantId) {
-  const stmt = db.prepare('SELECT enc_api_key, enc_api_secret FROM tenant_keys WHERE tenant_id = ?');
-  const row = stmt.get(tenantId);
-  
+export function getTenantKeys(tenantId) {
+  if (!tenantId) return null;
+  const row = db.prepare(
+    "SELECT enc_api_key, enc_api_secret FROM tenant_keys WHERE tenant_id = ?"
+  ).get(tenantId);
   if (!row) return null;
-  
-  return {
-    apiKey: decrypt(tenantId, row.enc_api_key),
-    apiSecret: decrypt(tenantId, row.enc_api_secret)
-  };
+  try {
+    return {
+      apiKey: decrypt(tenantId, row.enc_api_key),
+      apiSecret: decrypt(tenantId, row.enc_api_secret),
+    };
+  } catch (err) {
+    console.error(`[vault] decrypt failed for ${tenantId}:`, err.message);
+    return null;
+  }
 }
 
-module.exports = { storeTenantKeys, getTenantKeys };
+export function listTenants() {
+  return db.prepare("SELECT tenant_id, created_at FROM tenant_keys ORDER BY created_at").all();
+}
