@@ -1,35 +1,8 @@
-# Nova MCP Bridge (`nova_mcp`)
+# Nova MCP Bridge (`nova_mcp`) v1.4.0 A unified, zero-trust AI tool-use orchestration gateway connecting Large Language Models (LLMs) to centralized exchanges (CEX) and decentralized Web3 EVM rails via the Model Context Protocol (MCP). --- ## ⚡ Overview The **Nova MCP Bridge** exposes a single, high-performance REST endpoint (`/skills/execute`) that routes AI agent actions to two core execution engines while maintaining strict cryptographic tenant isolation: 1. **Bybit CEX Trading Rail:** Powered by `trading-mcp` across 380+ trading, balance, and ticker skills. 2. **Base Mainnet EVM Rail:** Direct smart contract integration for ERC-20 token operations (`$DKHYR`) and EIP-7702 account abstraction. --- ## 🔒 Security & Architecture (v1.4.0 Upgrades) - **Zero-Trust Per-Tenant Key Vault:** AES-256-GCM authenticated encryption for tenant credentials stored at rest (`nova.db`), eliminating plain-text API key leaks. - **PBKDF2 Key Derivation:** PBKDF2 with 100,000 iterations for password stretching and 32-byte high-entropy master key management (`~/.nova-vault-master.key`). - **Flexible Identity Resolution:** Supports seamless tenant routing via `tenant_id` or `org_id` context headers with fallback to default `.env` credentials when unassigned. - **Header-Based Gatekeeping:** Protected `/skills/execute` and `/v1/keys/store` routes requiring strict `X-Bridge-Token` validation. - **Address Checksum Resilience:** Built-in EIP-55 address sanitization using `ethers.js` v6. - **Immutable JSON Audit Logging:** Real-time structured logging (`/tmp/nova_mcp_logs/skill_calls.log`) tracking tenant identity, requested skill, parameters, and credential source for full execution traceability. --- ## 🛠️ Tech Stack - **Runtime:** Node.js / Express - **Protocol:** Model Context Protocol (MCP) via `@modelcontextprotocol/sdk` - **Security & Database:** `better-sqlite3`, Crypto (AES-256-GCM / PBKDF2) - **Web3 Libraries:** `ethers.js` (v6), Base Mainnet (`0x9991bE994829601F90328CCF9cee4D1A55ADae70`) - **CEX Engine:** Bybit V5 API (`trading-mcp`) --- ## 🚀 Quickstart & API Endpoints ### 1. Booting the Bridge ```bash cd ~/nova_mcp ./start.sh 2. Store Encrypted Tenant Credentials curl -s -X POST [http://127.0.0.1:8001/v1/keys/store](http://127.0.0.1:8001/v1/keys/store) \ -H "Content-Type: application/json" \ -H "X-Bridge-Token: $BRIDGE_SECRET" \ -d '{ "tenant_id": "tenant_alpha", "api_key": "YOUR_BYBIT_KEY", "api_secret": "YOUR_BYBIT_SECRET" }' 3. Execute a Skill (Live Decryption & Dispatch) curl -s -X POST [http://127.0.0.1:8001/skills/execute](http://127.0.0.1:8001/skills/execute) \ -H "Content-Type: application/json" \ -H "X-Bridge-Token: $BRIDGE_SECRET" \ -d '{ "skill_name": "bybit.ticker", "tenant_id": "tenant_alpha", "parameters": { "symbol": "BTCUSDT", "category": "linear" } }' 📖 Interactive API Docs 
 
-A unified AI tool-use orchestration gateway connecting Large Language Models (LLMs) to centralized exchanges (CEX) and decentralized Web3 EVM rails via the Model Context Protocol (MCP).
+Explore and test endpoints locally via Swagger UI at: http://127.0.0.1:8001/docs
 
-## Overview
-
-The **Nova MCP Bridge** exposes a single, high-performance REST endpoint (`/skills/execute`) that routes AI agent actions to two core execution engines:
-1. **Bybit CEX Trading Rail:** Powered by `trading-mcp` across 380+ trading and account skills.
-2. **Base Mainnet EVM Rail:** Direct smart contract integration for ERC-20 token operations (`$DKHYR`).
-
----
-
-## Key Features
-
-- **Unified API Gateway:** Single interface (`/skills/execute`) handling both CEX order execution and Web3 smart contract interactions.
-- **Sub-Second Latency:** Persistent process pooling via `StdioClientTransport` eliminating cold-start process overhead.
-- **Address Checksum Resilience:** Built-in EIP-55 address sanitization and normalization using `ethers.js`.
-- **JSON Audit Logging:** Real-time structured request/response logging (`/tmp/nova_mcp_logs/skill_calls.log`) for full execution traceability.
-- **Interactive API Docs:** Built-in Swagger UI available at `/docs`.
-
----
-
-## Tech Stack
-
-- **Runtime:** Node.js / Express
-- **Protocol:** Model Context Protocol (MCP) via `@modelcontextprotocol/sdk`
-- **Web3 Libraries:** `ethers.js` (v6), Alchemy JSON-RPC Provider
-- **Blockchain Target:** Base Mainnet (`0x9991bE994829601F90328CCF9cee4D1A55ADae70`)
-- **CEX Engine:** Bybit V5 API (`trading-mcp`)
-
----
-
-## License
+📄 License 
 
 MIT License
+
