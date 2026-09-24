@@ -36,3 +36,5 @@ credentials.json
 credentials.json
 *.pem
 *.key
+*.bak2
+*.bak

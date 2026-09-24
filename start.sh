@@ -21,7 +21,7 @@ export BYBIT_TESTNET="${BYBIT_TESTNET:-true}"
 # ---------- Redacted startup banner ----------
 # Only show first 8 chars of anything sensitive, or a fingerprint.
 echo "🔑 BYBIT_API_KEY:  ${BYBIT_API_KEY:0:8}...${BYBIT_API_KEY: -4}"
-echo "🌐 EVM_RPC_URL:    <set> ($(echo -n "$EVM_RPC_URL" | wc -c) chars)"
+echo "🌐 EVM_RPC_URL:    <set> ($(echo -n "$https://base-mainnet.g.alchemy.com/v2/2mcrNfMkBxuSbN3D77b77pyfjFAv1k7Z" | wc -c) chars)"
 echo "🪙 DKHYR:          ${DKHYR_TOKEN_ADDRESS:0:10}...${DKHYR_TOKEN_ADDRESS: -6}"
 echo "🔒 BRIDGE_SECRET:  <set>"
 echo "🚀 Starting bridge..."

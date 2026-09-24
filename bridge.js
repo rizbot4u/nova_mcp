@@ -47,6 +47,7 @@ const ORDER_LIMITS = {
 const TRANSFER_ALLOWLIST = [
   "0xa4ee963f223c193261d8545e4c4681ed3837af25",
   "0x084db36be9e2e6de5a9eadbdba6f26ee0c4f7113",
+  "0x7708394a76e0c9d8ee9975b20e4b1eef155d63fe",
 ];
 
 // ---------- Security: shared secret with Jarvis ----------
